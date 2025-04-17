@@ -1,5 +1,10 @@
 # Ignore everything else...
+/*
 /*/
+
+# Setup Plug-ins Script
+!/Setup.py
 
 # Blender Plug-ins
 !/[Bb]lender/
+/[Bb]lender/*.zip
