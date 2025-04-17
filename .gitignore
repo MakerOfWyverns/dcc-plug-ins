@@ -1,0 +1,5 @@
+# Ignore everything else...
+/*/
+
+# Blender Plug-ins
+!/[Bb]lender/
