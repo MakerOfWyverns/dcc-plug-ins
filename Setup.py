@@ -31,24 +31,33 @@ def generate_zip_files():
     return zip_files
 
 def unpack_zip_files(zip_files):
-    # TODO: Find all installed blender versions.
-    version = '4.4'
-    extensions_dir = f'%APPDATA%/Blender Foundation/Blender/{version}/extensions/user_default'
-    extensions_dir = os.path.expandvars(extensions_dir)
-    if not os.path.isdir(extensions_dir):
-        os.makedirs(extensions_dir)
+    # Find all installed blender versions to install extensions.
+    blender_foundation_dir = f'%APPDATA%/Blender Foundation/Blender'
+    blender_foundation_dir = os.path.expandvars(blender_foundation_dir)
+    for version in os.listdir(blender_foundation_dir):
+        # Check version directory.
+        version_dir = os.path.join(blender_foundation_dir, version)
+        if not os.path.isdir(version_dir):
+            continue
 
-    # Remove existing extensions.
-    for filename in os.listdir(extensions_dir):
-        filepath = os.path.join(extensions_dir, filename)
-        if os.path.isdir(filepath):
-            stub_file = os.path.join(filepath, CREATURETIME_PLUGIN_STUB)
-            if os.path.isfile(stub_file):
-                shutil.rmtree(filepath)
+        # Make directory if it doesn't exist yet.
+        extensions_dir = os.path.join(version_dir, 'extensions/user_default')
+        if not os.path.isdir(extensions_dir):
+            os.makedirs(extensions_dir)
 
-    for src in zip_files:
-        dst = os.path.join(extensions_dir, os.path.basename(src))
-        shutil.unpack_archive(src, os.path.splitext(dst)[0], 'zip')
+        # Remove existing extensions.
+        for filename in os.listdir(extensions_dir):
+            filepath = os.path.join(extensions_dir, filename)
+            if os.path.isdir(filepath):
+                stub_file = os.path.join(filepath, CREATURETIME_PLUGIN_STUB)
+                if os.path.isfile(stub_file):
+                    shutil.rmtree(filepath)
+
+        # Unpack all the zip files.
+        for src in zip_files:
+            dst = os.path.join(extensions_dir, os.path.basename(src))
+            shutil.unpack_archive(src, os.path.splitext(dst)[0], 'zip')
+
 
 if __name__ == '__main__':
     zipFiles = generate_zip_files()
