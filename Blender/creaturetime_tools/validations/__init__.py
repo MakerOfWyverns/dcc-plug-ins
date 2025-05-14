@@ -20,11 +20,15 @@ from .. import resources
 #   Validations
 # -------------------------------------------------------------------
 
+def ct_id(name):
+    return f'creaturetime.{name}'
+
+
 class Validation(object):
     NAME = None
 
     def __init__(self):
-        self.__errors = []
+        self.__errors = {}
 
     def reset(self):
         self.__errors.clear()
@@ -39,70 +43,162 @@ class Validation(object):
         self.__add_error(True, message, repair_func, repair_context)
 
     def __add_error(self, error_type, message, repair_func, repair_context):
-        self.__errors.append((error_type, message, (repair_func, repair_context) if repair_func else None))
+        if not isinstance(repair_context, tuple):
+            repair_context = (repair_context,)
+        self.__errors[len(self.__errors)] = (error_type, message, (repair_func, repair_context) if repair_func else None)
 
     def has_errors(self):
         return bool(self.__errors)
 
     def iter_errors(self):
-        for error in self.__errors:
-            yield error
+        for error_id in self.__errors:
+            error_type, message, repair = self.__errors[error_id]
+            yield error_id, error_type, message, repair
 
-    def has_repair(self, index):
-        return bool(self.__errors[index][2])
+    def has_repair(self, error_id):
+        return bool(self.__errors[error_id][2])
 
-    def repair(self, index):
-        _, _, repair = self.__errors[index]
+    def repair(self, error_id):
+        _, _, repair = self.__errors[error_id]
         if repair:
             repair_func, repair_context = repair
             return repair_func(repair_context)
         return False
 
 
-class MeshNamesValidation(Validation):
-    NAME = 'Mesh Names'
+class ObjectNamesValidation(Validation):
+    NAME = 'Object => Data Names'
 
     @staticmethod
     def repair_names(context):
-        mesh, obj = context
-        mesh.name = obj.name
+        data, obj = context
+        data.name = obj.name
         return True
 
     def validate(self, context, scene):
         for obj in bpy.data.objects:
-            if not isinstance(obj.data, bpy.types.Mesh):
+            if not isinstance(obj.data, (bpy.types.Mesh, bpy.types.Armature)):
                 continue
 
             mesh = obj.data
             if obj.name != mesh.name:
                 self.error(
-                    'Mesh name (%s) did not match object name (%s)' % (mesh.name, obj.name),
-                    MeshNamesValidation.repair_names, (mesh, obj))
+                    'Name (%s) did not match object name (%s)' % (mesh.name, obj.name),
+                    ObjectNamesValidation.repair_names, (mesh, obj))
+
+
+class BoneNamesValidation(Validation):
+    NAME = 'Bone Names'
+
+    @staticmethod
+    def repair_names(context):
+        bone = context[0]
+        name = bone.name
+        if ':' in name:
+            name = name[name.rfind(':') + 1:]
+        if 'Left' in name:
+            name = name.replace('Left', '')
+            name += '_L'
+        if 'Right' in name:
+            name = name.replace('Right', '')
+            name += '_R'
+        if ' ' in name:
+            name = name.replace(' ', '')
+        bone.name = name
+
+        return True
+
+    def validate(self, context, scene):
+        for obj in bpy.data.objects:
+            if not isinstance(obj.data, bpy.types.Armature):
+                continue
+
+            error_msg = 'Bone name (%s) needs to have correct naming convention'
+
+            armature = obj.data
+            for bone in armature.bones:
+                if ':' in bone.name:
+                    self.error(error_msg % bone.name, BoneNamesValidation.repair_names, bone)
+                    continue
+
+                if ' ' in bone.name:
+                    self.error(error_msg % bone.name, BoneNamesValidation.repair_names, bone)
+                    continue
+
+                if 'Left' in bone.name:
+                    self.error(error_msg % bone.name, BoneNamesValidation.repair_names, bone)
+                    continue
+
+                if 'Right' in bone.name:
+                    self.error(error_msg % bone.name, BoneNamesValidation.repair_names, bone)
+                    continue
 
 
 # -------------------------------------------------------------------
 #   Operators
 # -------------------------------------------------------------------
 
-class CREATURETIME_OT_ValidationActions(Operator):
-    """Performs validation actions"""
 
-    bl_idname = "creaturetime.validation_actions"
-    bl_label = "Validation Actions"
-    bl_description = "Run Validation"
+def validate_item(context, wm, item, validation):
+    validation.reset()
+    validation.validate(context, wm)
+
+    # Populate errors/warnings
+    if validation.has_errors():
+        error_icon_id = resources.get('error_x16').icon_id
+        warning_icon_id = resources.get('warning_x16').icon_id
+        for (error_id, error_type, message, repair) in validation.iter_errors():
+            error_item = wm.errors.add()
+            error_item.name = message
+            error_item.icon_value = error_icon_id if error_type else warning_icon_id
+            error_item.validation_id = item.id
+            error_item.error_id = error_id
+
+
+class CREATURETIME_OT_ValidateAllActions(Operator):
+    """Performs validation on all validation"""
+
+    bl_idname = ct_id('validation_validate_all')
+    bl_label = "Validate All"
+    bl_description = "Run all validations"
     bl_options = {'REGISTER'}
 
-    action: bpy.props.EnumProperty(
-        items=(
-            ('VALIDATE', "Validate", ""),
-        )
-    )
+    @classmethod
+    def poll(cls, context):
+        wm = bpy.context.window_manager
+        for item in wm.validations:
+            if item.validate:
+                return True
+        return False
+
+    def invoke(self, context, event):
+        wm = bpy.context.window_manager
+
+        # Clear out previous errors
+        wm.errors.clear()
+
+        for idx, item in enumerate(wm.validations):
+            if not item.validate:
+                continue
+            validation = validations[idx]
+            validate_item(context, wm, item, validation)
+
+        return {"FINISHED"}
+
+
+class CREATURETIME_OT_ValidateActions(Operator):
+    """Performs validation on selected validation"""
+
+    bl_idname = ct_id('validation_validate')
+    bl_label = "Validate"
+    bl_description = "Run selected validation"
+    bl_options = {'REGISTER'}
 
     @classmethod
     def poll(cls, context):
         wm = bpy.context.window_manager
         try:
-            wm.validations[wm.validations_index]
+            wm.validations[wm.validation_index]
         except IndexError:
             return False
         else:
@@ -110,53 +206,68 @@ class CREATURETIME_OT_ValidationActions(Operator):
 
     def invoke(self, context, event):
         wm = bpy.context.window_manager
-        if self.action == 'VALIDATE':
-            try:
-                item = wm.validations[wm.validations_index]
-            except IndexError:
-                pass
-            else:
-                # Clear out previous errors
-                wm.errors.clear()
+        try:
+            item = wm.validations[wm.validation_index]
+        except IndexError:
+            pass
+        else:
+            # Clear out previous errors
+            wm.errors.clear()
 
-                # Run Validation
-                validation = validations[item.id]
-                validation.reset()
-                validation.validate(context, wm)
-
-                # Populate errors/warnings
-                if validation.has_errors():
-                    error_icon_id = resources.get('error_x16').icon_id
-                    warning_icon_id = resources.get('warning_x16').icon_id
-                    for index, (error_type, message, repair) in enumerate(validation.iter_errors()):
-                        error_item = wm.errors.add()
-                        error_item.name = message
-                        error_item.icon_value = error_icon_id if error_type else warning_icon_id
-                        error_item.validation_id = item.id
-                        error_item.error_id = index
+            # Run Validation
+            validation = validations[item.id]
+            validate_item(context, wm, item, validation)
 
         return {"FINISHED"}
 
 
-class CREATURETIME_OT_ErrorActions(Operator):
-    """Performs validation actions"""
+class CREATURETIME_OT_RepairAllActions(Operator):
+    """Performs repair on selected error"""
 
-    bl_idname = "creaturetime.validation_repair"
-    bl_label = "Repair Action"
-    bl_description = "Repair Action"
-    bl_options = {'REGISTER'}
+    bl_idname = ct_id('validation_repair_all')
+    bl_label = "Repair All"
+    bl_description = "Repair all errors"
+    bl_options = {'REGISTER', 'UNDO'}
 
-    action: bpy.props.EnumProperty(
-        items=(
-            ('REPAIR', "Repair", ""),
-        )
-    )
+    @classmethod
+    def poll(cls, context):
+        wm = bpy.context.window_manager
+        for item in wm.errors:
+            validation = validations[item.validation_id]
+            if validation.has_repair(item.error_id):
+                return True
+        return False
+
+    def invoke(self, context, event):
+        wm = bpy.context.window_manager
+        to_remove = []
+        for index, item in enumerate(wm.errors):
+            validation = validations[item.validation_id]
+            if validation.has_repair(item.error_id):
+                if validation.repair(item.error_id):
+                    to_remove.insert(0, index)
+                    continue
+            index += 1
+
+        for index in to_remove:
+            wm.errors.remove(index)
+
+        return {"FINISHED"}
+
+
+class CREATURETIME_OT_RepairActions(Operator):
+    """Performs repair on selected error"""
+
+    bl_idname = ct_id('validation_repair')
+    bl_label = "Repair"
+    bl_description = "Repair selected error"
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         wm = bpy.context.window_manager
         try:
-            item = wm.errors[wm.errors_index]
+            item = wm.errors[wm.error_index]
         except IndexError:
             return False
         else:
@@ -165,18 +276,17 @@ class CREATURETIME_OT_ErrorActions(Operator):
 
     def invoke(self, context, event):
         wm = bpy.context.window_manager
-        if self.action == 'REPAIR':
-            try:
-                item = wm.errors[wm.errors_index]
-            except IndexError:
-                pass
-            else:
-                validation = validations[item.validation_id]
-                if validation.has_repair(item.error_id):
-                    if validation.repair(item.error_id):
-                        wm.errors.remove(wm.errors_index)
-                    else:
-                        raise Exception('Failed to repair - %s' % item.name)
+        try:
+            item = wm.errors[wm.error_index]
+        except IndexError:
+            pass
+        else:
+            validation = validations[item.validation_id]
+            if validation.has_repair(item.error_id):
+                if validation.repair(item.error_id):
+                    wm.errors.remove(wm.error_index)
+                else:
+                    raise Exception('Failed to repair - %s' % item.name)
 
         return {"FINISHED"}
 
@@ -206,35 +316,49 @@ class CREATURETIME_UL_Errors(UIList):
         pass
 
 
-class CREATURETIME_PT_Validations(Panel):
+class VIEW3D_PT_Validator(Panel):
     """Validations panel."""
 
-    bl_idname = 'creaturetime.validations_panel'
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = 'Validations'
-    bl_label = "Validations"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_label = 'Validator'
+    bl_category = 'CreatureTime'
 
     def draw(self, context):
         layout = self.layout
         wm = bpy.context.window_manager
 
-        rows = 2
-        layout.label(text="Validations")
+        layout.label(text='Validations', icon_value=resources.get('validate_x16').icon_id)
         row = layout.row()
-        row.template_list(CREATURETIME_UL_Validations.__name__, "", wm, "validations", wm, "validations_index",
-                          rows=rows)
+        row.template_list(CREATURETIME_UL_Validations.__name__,
+                          'validations',
+                          wm, 'validations',
+                          wm, 'validation_index',
+                          rows=3)
 
         col = row.column(align=True)
-        col.operator(CREATURETIME_OT_ValidationActions.bl_idname, icon_value=resources.get('validate_x16').icon_id, text="").action = 'VALIDATE'
+        col.operator(CREATURETIME_OT_ValidateAllActions.bl_idname,
+                     text="",
+                     icon_value=resources.get('validate_x16').icon_id)
+        col.operator(CREATURETIME_OT_ValidateActions.bl_idname,
+                     text="",
+                     icon_value=resources.get('validate_x16').icon_id)
 
-        rows = 2
-        layout.label(text="Errors")
+        layout.label(text='Errors', icon_value=resources.get('repair_x16').icon_id)
         row = layout.row()
-        row.template_list(CREATURETIME_UL_Errors.__name__, "", wm, "errors", wm, "errors_index", rows=rows)
+        row.template_list(CREATURETIME_UL_Errors.__name__,
+                          'validation_errors',
+                          wm, 'errors',
+                          wm, 'error_index',
+                          rows=3)
 
         col = row.column(align=True)
-        col.operator(CREATURETIME_OT_ErrorActions.bl_idname, icon_value=resources.get('repair_x16').icon_id, text="").action = 'REPAIR'
+        col.operator(CREATURETIME_OT_RepairAllActions.bl_idname,
+                     text="",
+                     icon_value=resources.get('repair_x16').icon_id)
+        col.operator(CREATURETIME_OT_RepairActions.bl_idname,
+                     text="",
+                     icon_value=resources.get('repair_x16').icon_id)
 
 
 # -------------------------------------------------------------------
@@ -264,19 +388,22 @@ class CREATURETIME_Error(PropertyGroup):
 
 # Store all classes to register
 classes = (
-    CREATURETIME_OT_ValidationActions,
-    CREATURETIME_OT_ErrorActions,
+    CREATURETIME_OT_ValidateAllActions,
+    CREATURETIME_OT_ValidateActions,
+    CREATURETIME_OT_RepairAllActions,
+    CREATURETIME_OT_RepairActions,
     CREATURETIME_UL_Validations,
     CREATURETIME_Validation,
     CREATURETIME_UL_Errors,
     CREATURETIME_Error,
-    CREATURETIME_PT_Validations,
+    VIEW3D_PT_Validator,
 )
 
 # Store all validations
 # TODO: Make this discoverable.
 validations = (
-    MeshNamesValidation(),
+    ObjectNamesValidation(),
+    BoneNamesValidation()
 )
 
 
@@ -300,9 +427,9 @@ def register():
     # Set up validation properties
     wm = bpy.types.WindowManager
     wm.validations = CollectionProperty(type=CREATURETIME_Validation)
-    wm.validations_index = IntProperty()
+    wm.validation_index = IntProperty(name='Active Validation Index')
     wm.errors = CollectionProperty(type=CREATURETIME_Error)
-    wm.errors_index = IntProperty()
+    wm.error_index = IntProperty(name='Active Error Index')
 
     bpy.app.handlers.load_post.append(load_validations)
 
@@ -313,9 +440,9 @@ def unregister():
     # Tear down scene properties
     wm = bpy.types.WindowManager
     del wm.validations
-    del wm.validations_index
+    del wm.validation_index
     del wm.errors
-    del wm.errors_index
+    del wm.error_index
 
     from bpy.utils import unregister_class
     for cls in reversed(classes):

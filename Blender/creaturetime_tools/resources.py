@@ -5,7 +5,6 @@ from . import constants
 
 _RESOURCES_DIR = os.path.join(constants.MAIN_DIR, "resources")
 _MAIN_RESOURCES = 'main'
-
 _RESOURCES = {}
 
 def load_resources():
@@ -28,4 +27,4 @@ def unload_resources():
     _RESOURCES.clear()
 
 def get(name):
-    return _RESOURCES[_MAIN_RESOURCES][name]
+    return _RESOURCES[_MAIN_RESOURCES].get(name, 'default_white_x16')
